@@ -17,6 +17,13 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY apps/dsa-web/ ./
 RUN DSA_WEB_VERSION="${DSA_WEB_VERSION}" DSA_WEB_REVISION="${DSA_WEB_REVISION}" npm run build
 
+# Install Codex CLI in the Node stage, then copy the minimal runtime into the
+# Python image. DSA's experimental Agent backend launches `codex app-server`.
+RUN npm install -g @openai/codex@latest && \
+    codex --version && \
+    codex app-server generate-json-schema --experimental --out /tmp/codex-schema-smoke && \
+    rm -rf /tmp/codex-schema-smoke
+
 # Pin to bookworm: wkhtmltopdf was removed from Debian testing (2025)
 FROM python:3.11-slim-bookworm
 
@@ -38,6 +45,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
+
+# Runtime pieces required by the Codex CLI installed in the web-builder stage.
+COPY --from=web-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=web-builder /usr/local/lib/node_modules/@openai/codex /usr/local/lib/node_modules/@openai/codex
+RUN ln -sf ../lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex && \
+    codex --version && \
+    codex app-server generate-json-schema --experimental --out /tmp/codex-schema-smoke && \
+    rm -rf /tmp/codex-schema-smoke
 
 # 创建非 root 用户 (UID 1000)
 RUN groupadd -g 1000 dsa && \

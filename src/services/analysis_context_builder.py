@@ -437,14 +437,23 @@ def _build_news_block(artifacts: PipelineAnalysisArtifacts) -> AnalysisContextBl
             metadata=metadata,
         )
 
+    source = (
+        "a_stock_free_fallback"
+        if "A股免费情报源补充" in content
+        else "search_or_local_intel"
+    )
+    metadata["source"] = source
+
     return AnalysisContextBlock(
         status=ContextFieldStatus.AVAILABLE,
         items={
             "content": AnalysisContextItem(
                 status=ContextFieldStatus.AVAILABLE,
                 value=content,
+                source=source,
             )
         },
+        source=source,
         metadata=metadata,
     )
 

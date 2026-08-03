@@ -65,15 +65,23 @@ _RELEVANT_NOTIFICATIONS = {
 _ALLOWED_ENV_NAMES = {
     "CODEX_HOME",
     "HOME",
+    "ALL_PROXY",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
     "LANG",
     "LC_ALL",
     "LOGNAME",
+    "NO_PROXY",
     "PATH",
     "SHELL",
     "SSL_CERT_DIR",
     "SSL_CERT_FILE",
     "TMPDIR",
     "USER",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
 }
 
 

@@ -413,7 +413,17 @@ def test_news_block_treats_blank_as_missing_and_records_pack_metadata() -> None:
     )
     assert available.blocks["news"].status == ContextFieldStatus.AVAILABLE
     assert available.blocks["news"].items["content"].value == "news"
+    assert available.blocks["news"].items["content"].source == "search_or_local_intel"
     assert available.metadata["news_result_count"] == 5
+
+    free_source = AnalysisContextBuilder.build(
+        _artifacts(news_context="## A股免费情报源补充｜公告\n- 示例公告")
+    )
+    assert free_source.blocks["news"].source == "a_stock_free_fallback"
+    assert (
+        free_source.blocks["news"].items["content"].source
+        == "a_stock_free_fallback"
+    )
 
 
 def test_data_quality_scores_fixed_blocks_and_limits_auxiliary_missing() -> None:

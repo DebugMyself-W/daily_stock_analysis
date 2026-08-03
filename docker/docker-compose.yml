@@ -1,4 +1,4 @@
-# ===================================
+﻿# ===================================
 # A股自选股智能分析系统 - Docker Compose
 # ===================================
 # 
@@ -29,6 +29,9 @@ x-common: &common
     # Longbridge OAuth token cache persistence; entrypoint repairs container-side ownership for dsa user.
     # Create ../longbridge_tokens on the host before copying an authorized token cache into it.
     - ../longbridge_tokens:/home/dsa/.longbridge
+    # Codex CLI login/config for the experimental local Agent backend.
+    # The container runs as UID 1000, matching the WSL ubuntu user that owns this directory.
+    - ${CODEX_HOME_HOST:-../codex_home}:/home/dsa/.codex
     # 如需覆盖前端静态资源，可挂载本地 static 目录
     # - ../static:/app/static:ro
 
@@ -38,6 +41,15 @@ x-common: &common
     # Web/API service bind address (must be 0.0.0.0 inside container)
     - WEBUI_HOST=0.0.0.0
     # API_PORT 从 .env 文件读取，无需在此硬编码
+    - CODEX_HOME=/home/dsa/.codex
+    # Windows-side proxy exposed to WSL via the Windows gateway.
+    # If WSL's default gateway changes after a reboot, update this address.
+    - HTTP_PROXY=${DSA_PROXY_URL:-}
+    - HTTPS_PROXY=${DSA_PROXY_URL:-}
+    - ALL_PROXY=${DSA_PROXY_URL:-}
+    - http_proxy=${DSA_PROXY_URL:-}
+    - https_proxy=${DSA_PROXY_URL:-}
+    - all_proxy=${DSA_PROXY_URL:-}
 
     # 代理设置（如果需要）
     # - http_proxy=http://host.docker.internal:10809

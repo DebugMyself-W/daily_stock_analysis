@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
@@ -760,7 +761,117 @@ class HistoryService:
             if earliest_allowed <= published <= latest_allowed:
                 filtered.append(item)
 
-        return filtered[:limit]
+        if filtered:
+            return filtered[:limit]
+
+        return self._fallback_news_from_analysis_context_text(analysis, limit=limit)
+
+    def _fallback_news_from_analysis_context_text(self, analysis: Any, limit: int) -> List[Any]:
+        """Parse saved analysis news_context text when no discrete news rows exist.
+
+        Free-source fallbacks are saved into analysis_history.news_content so the
+        LLM input and data-quality card can mark news as available. Older UI/API
+        paths read the separate news_intel table, so expose the saved context as
+        lightweight news-like rows when the table has no records for this query.
+        """
+        content = (getattr(analysis, "news_content", None) or "").strip()
+        if not content:
+            snapshot = parse_json_field(getattr(analysis, "context_snapshot", None))
+            if isinstance(snapshot, dict):
+                content = (
+                    snapshot.get("news_content")
+                    or snapshot.get("news_retrieval_content")
+                    or ""
+                ).strip()
+        if not content:
+            return []
+
+        pdf_url_by_title: Optional[Dict[str, str]] = None
+
+        def _normalize_title(value: Any) -> str:
+            return " ".join(str(value or "").strip().split())
+
+        def _plain_a_stock_code(value: Any) -> str:
+            raw = str(value or "").strip().upper()
+            if "." in raw:
+                raw = raw.split(".", 1)[0]
+            for prefix in ("SH", "SZ", "BJ"):
+                if raw.startswith(prefix):
+                    raw = raw[len(prefix):]
+                    break
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            return digits.zfill(6) if digits and len(digits) <= 6 else digits
+
+        def _cninfo_pdf_url_for_title(title: str) -> str:
+            nonlocal pdf_url_by_title
+            if pdf_url_by_title is None:
+                pdf_url_by_title = {}
+                code = _plain_a_stock_code(getattr(analysis, "code", ""))
+                if code:
+                    try:
+                        from data_provider import DataFetcherManager
+
+                        rows = (
+                            DataFetcherManager()
+                            .get_free_announcements(code, page_size=30)
+                            or []
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Resolve CNINFO PDF url from saved news context failed: %s",
+                            exc,
+                        )
+                        rows = []
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        row_title = _normalize_title(row.get("title"))
+                        pdf_url = str(row.get("pdf_url") or "").strip()
+                        if row_title and pdf_url:
+                            pdf_url_by_title[row_title] = pdf_url
+            return pdf_url_by_title.get(_normalize_title(title), "")
+
+        items: List[Any] = []
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("- "):
+                continue
+
+            body = line[2:].strip()
+            if not body:
+                continue
+
+            url = ""
+            title_part = body
+            for token in body.split():
+                if token.startswith(("http://", "https://")):
+                    url = token
+                    title_part = body.split(token, 1)[0].strip()
+                    break
+
+            title = title_part
+            if "（" in title and title.endswith("）"):
+                title = title.rsplit("（", 1)[0].strip() or title_part
+            elif "(" in title and title.endswith(")"):
+                title = title.rsplit("(", 1)[0].strip() or title_part
+
+            if "cninfo.com.cn/new/disclosure/detail" in url:
+                url = _cninfo_pdf_url_for_title(title) or url
+
+            items.append(
+                SimpleNamespace(
+                    title=title,
+                    snippet=body,
+                    url=url,
+                    source="analysis_context",
+                    published_date=None,
+                    fetched_at=getattr(analysis, "created_at", None),
+                )
+            )
+            if len(items) >= limit:
+                break
+
+        return items
     
     def _get_sentiment_label(self, score: int) -> str:
         """

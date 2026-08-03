@@ -20,6 +20,7 @@ class TestFreeSourceStockContext(unittest.TestCase):
                 "title": "年度报告",
                 "date": "2026-07-30",
                 "source": "cninfo",
+                "url": "https://www.cninfo.com.cn/new/disclosure/detail?annoId=1",
                 "pdf_url": "https://static.cninfo.com.cn/test.pdf",
             }
         ]
@@ -37,6 +38,8 @@ class TestFreeSourceStockContext(unittest.TestCase):
 
         self.assertIn("A股免费情报源补充", text)
         self.assertIn("年度报告", text)
+        self.assertIn("https://static.cninfo.com.cn/test.pdf", text)
+        self.assertNotIn("https://www.cninfo.com.cn/new/disclosure/detail?annoId=1", text)
         self.assertIn("免费资金流 fallback", text)
         self.assertIn("净额 12345", text)
         pipeline.fetcher_manager.get_fallback_announcements.assert_not_called()

@@ -621,31 +621,49 @@ class StockAnalysisPipeline:
 
                 # 格式化情报报告
                 if intel_results:
-                    news_context = self.search_service.format_intel_report(intel_results, stock_name)
                     total_results = sum(
                         len(r.results) for r in intel_results.values() if r.success
                     )
-                    news_result_count = total_results
-                    logger.info(f"{stock_name}({code}) 情报搜索完成: 共 {total_results} 条结果")
-                    logger.debug(f"{stock_name}({code}) 情报搜索结果:\n{news_context}")
+                    if total_results > 0:
+                        news_context = self.search_service.format_intel_report(intel_results, stock_name)
+                        news_result_count = total_results
+                        logger.info(f"{stock_name}({code}) intelligence search completed: {total_results} usable results")
+                        logger.debug(f"{stock_name}({code}) intelligence search result:\n{news_context}")
 
-                    # 保存新闻情报到数据库（用于后续复盘与查询）
-                    try:
-                        query_context = self._build_query_context(query_id=query_id)
-                        for dim_name, response in intel_results.items():
-                            if response and response.success and response.results:
-                                self.db.save_news_intel(
-                                    code=code,
-                                    name=stock_name,
-                                    dimension=dim_name,
-                                    query=response.query,
-                                    response=response,
-                                    query_context=query_context
-                                )
-                    except Exception as e:
-                        logger.warning(f"{stock_name}({code}) 保存新闻情报失败: {e}")
+                        try:
+                            query_context = self._build_query_context(query_id=query_id)
+                            for dim_name, response in intel_results.items():
+                                if response and response.success and response.results:
+                                    self.db.save_news_intel(
+                                        code=code,
+                                        name=stock_name,
+                                        dimension=dim_name,
+                                        query=response.query,
+                                        response=response,
+                                        query_context=query_context
+                                    )
+                        except Exception as e:
+                            logger.warning(f"{stock_name}({code}) failed to persist news intelligence: {e}")
+                    else:
+                        logger.info(
+                            "%s(%s) SearchService returned no usable intelligence results; trying A-share free-source fallback",
+                            stock_name,
+                            code,
+                        )
             else:
                 logger.info(f"{stock_name}({code}) 搜索服务不可用，跳过情报搜索")
+
+            if not news_context:
+                free_context = self._build_free_a_stock_intelligence_context(code, stock_name)
+                if free_context:
+                    news_context = free_context
+                    news_result_count = self._count_free_a_stock_intelligence_items(free_context)
+                    logger.info(
+                        "%s(%s) injected A-share free-source intelligence context after SearchService miss (%s items)",
+                        stock_name,
+                        code,
+                        news_result_count or 0,
+                    )
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
@@ -1398,6 +1416,15 @@ class StockAnalysisPipeline:
                     else persisted_intelligence_context
                 )
                 logger.info(f"[{code}] Agent mode: local intelligence evidence injected into news_context")
+
+            if not initial_context.get("news_context"):
+                free_context = self._build_free_a_stock_intelligence_context(code, stock_name)
+                if free_context:
+                    initial_context["news_context"] = free_context
+                    logger.info(
+                        "[%s] Agent mode: injected A-share free-source intelligence context after SearchService/local miss",
+                        code,
+                    )
 
             # Issue #1066: ensure deep history is in DB before agent tools run
             self._ensure_agent_history(code)
@@ -2799,6 +2826,138 @@ class StockAnalysisPipeline:
         except Exception as exc:
             logger.debug("读取本地资讯证据失败（fail-open）: %s", exc)
             return None
+
+    def _build_free_a_stock_intelligence_context(
+        self,
+        code: str,
+        stock_name: str,
+        *,
+        announcement_limit: int = 5,
+        fund_flow_limit: int = 3,
+        market_news_limit: int = 3,
+    ) -> Optional[str]:
+        """Build bounded A-share free-source context when SearchService has no usable results.
+
+        SearchService remains the primary source. This fallback only uses zero-key
+        sources already exposed by DataFetcherManager/a-stock-data integration, so
+        report snapshots do not lose the news/intelligence input block when search
+        keys are absent or search returns no usable result.
+        """
+        normalized_code = normalize_stock_code(code)
+        if not normalized_code or not normalized_code.isdigit() or len(normalized_code) != 6:
+            return None
+
+        manager = getattr(self, "fetcher_manager", None)
+        if manager is None:
+            return None
+
+        sections: List[str] = []
+
+        try:
+            announcements = manager.get_free_announcements(
+                normalized_code,
+                page_size=announcement_limit,
+            ) or []
+        except Exception as exc:
+            logger.debug("%s(%s) A-share free announcement source failed: %s", stock_name, code, exc)
+            announcements = []
+
+        if not announcements:
+            try:
+                announcements = manager.get_fallback_announcements(
+                    normalized_code,
+                    page_size=announcement_limit,
+                ) or []
+            except Exception as exc:
+                logger.debug("%s(%s) A-share announcement fallback failed: %s", stock_name, code, exc)
+                announcements = []
+
+        if announcements:
+            lines = ["## A股免费情报源补充｜公告"]
+            for item in announcements[:announcement_limit]:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "未命名公告").strip()
+                published = str(item.get("date") or item.get("time") or item.get("publish_time") or "").strip()
+                source = str(item.get("source") or "announcement").strip()
+                url = str(item.get("pdf_url") or item.get("pdf") or item.get("url") or "").strip()
+                suffix = " / ".join(part for part in (published, source) if part)
+                line = f"- {title}" + (f"（{suffix}）" if suffix else "")
+                if url:
+                    line += f" {url}"
+                lines.append(line)
+            if len(lines) > 1:
+                sections.append("\n".join(lines))
+
+        try:
+            fund_flow_rows = manager.get_fallback_fund_flow(
+                normalized_code,
+                days=max(fund_flow_limit, 10),
+            ) or []
+        except Exception as exc:
+            logger.debug("%s(%s) A-share fund-flow fallback failed: %s", stock_name, code, exc)
+            fund_flow_rows = []
+
+        if fund_flow_rows:
+            lines = ["## A股免费情报源补充｜免费资金流 fallback"]
+            for item in fund_flow_rows[:fund_flow_limit]:
+                if not isinstance(item, dict):
+                    continue
+                parts = []
+                if item.get("date"):
+                    parts.append(str(item.get("date")))
+                if item.get("close") not in (None, ""):
+                    parts.append(f"收盘 {item.get('close')}")
+                if item.get("net_amount") not in (None, ""):
+                    parts.append(f"净额 {item.get('net_amount')}")
+                if item.get("turnover") not in (None, ""):
+                    parts.append(f"换手 {item.get('turnover')}")
+                if parts:
+                    lines.append("- " + "，".join(parts))
+            if len(lines) > 1:
+                sections.append("\n".join(lines))
+
+        try:
+            market_news = manager.get_free_market_news(page_size=max(market_news_limit, 10)) or []
+        except Exception as exc:
+            logger.debug("%s(%s) A-share free market news source failed: %s", stock_name, code, exc)
+            market_news = []
+
+        matched_news: List[Dict[str, Any]] = []
+        for item in market_news:
+            if not isinstance(item, dict):
+                continue
+            haystack = " ".join(
+                str(item.get(key) or "")
+                for key in ("title", "content", "summary", "url")
+            )
+            if normalized_code in haystack or (stock_name and stock_name in haystack):
+                matched_news.append(item)
+
+        if matched_news:
+            lines = ["## A股免费情报源补充｜市场新闻命中"]
+            for item in matched_news[:market_news_limit]:
+                title = str(item.get("title") or item.get("content") or "未命名资讯").strip()
+                published = str(item.get("time") or item.get("date") or "").strip()
+                source = str(item.get("source") or "free-market-news").strip()
+                url = str(item.get("url") or "").strip()
+                suffix = " / ".join(part for part in (published, source) if part)
+                line = f"- {title[:220]}" + (f"（{suffix}）" if suffix else "")
+                if url:
+                    line += f" {url}"
+                lines.append(line)
+            sections.append("\n".join(lines))
+
+        if not sections:
+            return None
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _count_free_a_stock_intelligence_items(context: Optional[str]) -> Optional[int]:
+        if not context:
+            return None
+        count = sum(1 for line in context.splitlines() if line.lstrip().startswith("- "))
+        return count or None
 
     def _build_legacy_analysis_artifacts(
         self,
