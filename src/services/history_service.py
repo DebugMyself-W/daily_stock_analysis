@@ -855,6 +855,13 @@ class HistoryService:
             elif "(" in title and title.endswith(")"):
                 title = title.rsplit("(", 1)[0].strip() or title_part
 
+            if not url:
+                # The saved free-source context may also contain non-news text
+                # rows such as fund-flow summaries. Keep /history/{id}/news as
+                # a news/link endpoint instead of returning text-only rows with
+                # empty URLs.
+                continue
+
             if "cninfo.com.cn/new/disclosure/detail" in url:
                 url = _cninfo_pdf_url_for_title(title) or url
 

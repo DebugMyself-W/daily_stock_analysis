@@ -103,13 +103,12 @@ class HistoryNewsFallbackTestCase(unittest.TestCase):
         with patch("data_provider.DataFetcherManager", return_value=manager):
             result = svc.get_news_intel("q-1", limit=20)
 
-        self.assertEqual(len(result), 2)
+        self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["title"], "关于向香港联交所递交 H 股发行上市申请的进展公告")
         self.assertEqual(
             result[0]["url"],
             "https://static.cninfo.com.cn/finalpage/test.pdf",
         )
-        self.assertIn("净额 269289756.19", result[1]["snippet"])
 
 
 if __name__ == "__main__":

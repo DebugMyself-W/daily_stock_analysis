@@ -1,0 +1,5 @@
+# Development/test-only dependencies.
+#
+# Keep production images on requirements.txt. Use this file in an ephemeral
+# test container or local virtualenv when running the focused regression tests.
+pytest>=8.0,<9.0
